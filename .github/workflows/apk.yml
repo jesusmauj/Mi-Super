@@ -23,10 +23,14 @@ jobs:
       - name: Instalar dependencias
         run: npm install
 
-      - name: Crear proyecto Android y sincronizar la web
-        run: |
-          npx cap add android
-          npx cap sync android
+      - name: Crear proyecto Android
+        run: npx cap add android
+
+      - name: Generar iconos y pantalla de carga
+        run: npx capacitor-assets generate --android --iconBackgroundColor "#2f7d57" --iconBackgroundColorDark "#2f7d57" --splashBackgroundColor "#f6f5f1" --splashBackgroundColorDark "#131715"
+
+      - name: Sincronizar la web
+        run: npx cap sync android
 
       - name: Compilar APK
         working-directory: android

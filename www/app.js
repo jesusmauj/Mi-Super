@@ -9,7 +9,7 @@
   // prices: { "<departamento>": { "<nombre normalizado>": { name, unit, price, at } } }
   // history: [{ id, at, total, count, items: [{ name, unit, qty, price }] }]
   const defaults = {
-    lang: "", budget: 0, budgetWeek: 0, budgetMonth: 0, currency: "COP", region: "", town: "",
+    lang: "", onboarded: false, budget: 0, budgetWeek: 0, budgetMonth: 0, currency: "COP", region: "", town: "",
     prices: {}, custom: [], list: [], history: [],
   };
   let state = load();
@@ -22,6 +22,7 @@
       if (!s.prices || typeof s.prices !== "object") s.prices = {};
       if (!Array.isArray(s.history)) s.history = [];
       if (!LANGS[s.lang]) s.lang = (navigator.language || "es").toLowerCase().startsWith("en") ? "en" : "es";
+      if (s.region) s.onboarded = true; // quien ya usaba la app no necesita la bienvenida
       return s;
     } catch (e) {
       return Object.assign({}, defaults, { prices: {}, history: [], lang: "es" });
@@ -89,6 +90,7 @@
     products: ["M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z", "M7.5 7.5h.01"],
     tips: ["M9 18h6M10 21h4", "M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"],
     settings: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 4v6M9 14v6"],
+    budget: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "M12 7v10", "M15 9.5c-.6-1-1.7-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.3 0-2.4-.5-3-1.5"],
   };
 
   function toast(msg) {
@@ -152,8 +154,11 @@
   }
   const knownPrice = (name) => placePrices()[norm(name)] || null;
 
+  // Guarda el precio nuevo y conserva el anterior (prev) para mostrar si subió o bajó.
   function rememberPrice(name, unit, price) {
-    placePrices()[norm(name)] = { name, unit, price, at: Date.now() };
+    const old = placePrices()[norm(name)];
+    const prev = old ? (old.price !== price ? old.price : old.prev) : undefined;
+    placePrices()[norm(name)] = { name, unit, price, at: Date.now(), prev };
     save();
   }
   function forgetPrice(name) {
@@ -589,6 +594,9 @@
       periodCard(t("spend.month") + " · " + monthLabel, spentSince(monthStart()), state.budgetMonth, "month")
     );
 
+    const cats = monthByCategory();
+    if (cats.length) root.append(categoryCard(cats));
+
     if (state.list.length) root.append(h("div", { class: "note" }, t("spend.inlist", { total: money(total()) })));
 
     root.append(h("div", { class: "section-title" }, t("spend.recent")));
@@ -608,6 +616,39 @@
     }
     root.append(box);
   };
+
+  // Categoría de un producto del historial (se deduce por nombre, así sirve también para compras viejas)
+  function catOf(name) {
+    const p = window.CATALOG.concat(state.custom).find((x) => norm(x.name) === norm(name));
+    return p ? p.cat : "Otros";
+  }
+
+  function monthByCategory() {
+    const from = monthStart().getTime();
+    const sums = {};
+    for (const p of state.history) {
+      if (p.at < from) continue;
+      for (const i of p.items) {
+        const c = catOf(i.name);
+        sums[c] = (sums[c] || 0) + i.price * i.qty;
+      }
+    }
+    return Object.entries(sums).sort((a, b) => b[1] - a[1]);
+  }
+
+  function categoryCard(cats) {
+    const sum = cats.reduce((s, [, v]) => s + v, 0);
+    return h("div", { class: "card cats" },
+      h("div", { class: "cats-title" }, t("spend.cats")),
+      cats.map(([cat, v]) => {
+        const pct = sum > 0 ? (v / sum) * 100 : 0;
+        return h("div", { class: "cat-row" },
+          h("div", { class: "cat-line" },
+            h("span", null, dc(cat)),
+            h("span", null, money(v) + " · " + Math.round(pct) + "%")),
+          h("div", { class: "bar thin" }, h("i", { style: "width:" + pct + "%" })));
+      }));
+  }
 
   function periodCard(label, spent, budget, kind) {
     const card = h("button", { class: "summary period", onclick: () => openBudget(kind) });
@@ -683,7 +724,12 @@
           h("button", { class: "row", onclick: () => openPriceEdit(e) },
             h("div", null, h("span", { class: "n" }, dn(e.name)),
               h("div", { class: "u" }, du(e.unit) + " · " + t("products.updated", { date: when }))),
-            h("div", { class: "p" }, money(e.price)))
+            h("div", { class: "right" },
+              h("div", { class: "p" }, money(e.price)),
+              e.prev != null && e.prev !== e.price
+                ? h("div", { class: "diff " + (e.price > e.prev ? "up" : "down") },
+                    (e.price > e.prev ? "▲ " : "▼ ") + money(Math.abs(e.price - e.prev)))
+                : null))
         );
       }
     }
@@ -840,10 +886,47 @@
     ));
   }
 
+  /* ---------- Bienvenida (una sola vez) ---------- */
+  function showIntro() {
+    const root = $("intro");
+    const slides = [["budget", "intro.1"], ["products", "intro.2"], ["spend", "intro.3"]];
+    let i = 0;
+
+    function finish() {
+      root.hidden = true;
+      state.onboarded = true;
+      save();
+      render();
+      if (!state.region) openRegion();
+    }
+
+    function draw() {
+      const [ic, key] = slides[i];
+      const last = i === slides.length - 1;
+      root.replaceChildren(
+        h("div", { class: "intro-top" },
+          h("div", { class: "langs" }, Object.entries(LANGS).map(([code, label]) =>
+            h("button", { class: code === state.lang ? "on" : "", onclick: () => { state.lang = code; save(); draw(); } }, code.toUpperCase()))),
+          last ? null : h("button", { class: "skip", onclick: finish }, t("intro.skip"))),
+        h("div", { class: "intro-body" },
+          h("div", { class: "intro-icon" }, icon(44, ...ICONS[ic])),
+          h("h2", null, t(key + ".t")),
+          h("p", null, t(key + ".b"))),
+        h("div", { class: "intro-foot" },
+          h("div", { class: "dots" }, slides.map((_, n) => h("i", { class: n === i ? "on" : "" }))),
+          h("button", { class: "btn block", onclick: () => (last ? finish() : (i++, draw())) }, last ? t("intro.start") : t("intro.next")))
+      );
+    }
+
+    root.hidden = false;
+    draw();
+  }
+
   /* ---------- Inicio ---------- */
   $("btn-add").addEventListener("click", () => openAdd());
   $("btn-menu").addEventListener("click", openMenu);
   $("btn-loc").addEventListener("click", () => go("settings"));
   render();
-  if (!state.region) openRegion();
+  if (!state.onboarded && !state.region) showIntro();
+  else if (!state.region) openRegion();
 })();
