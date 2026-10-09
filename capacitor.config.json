@@ -1,0 +1,8 @@
+{
+  "appId": "app.misuper.gastos",
+  "appName": "Mi Súper",
+  "webDir": "www",
+  "plugins": {
+    "CapacitorHttp": { "enabled": true }
+  }
+}
