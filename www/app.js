@@ -80,8 +80,68 @@
   }
 
   function icon(size, ...paths) {
-    return h("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" },
+    return h("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" },
       paths.map((d) => h("path", { d })));
+  }
+
+  /* ---------- Categorías: orden, color e icono ---------- */
+  const CAT_ORDER = ["Frutas y verduras", "Carnes y pescado", "Lácteos y huevos", "Despensa", "Bebidas", "Aseo y hogar", "Mis productos", "Otros"];
+  const CAT_STYLE = {
+    "Frutas y verduras": ["produce", ["M12 7.5c-1.6-1.4-4.6-1.5-6 .6-1.6 2.3-.9 6.4 1 9 1.3 1.8 2.8 2.6 5 1.6 2.2 1 3.7.2 5-1.6 1.9-2.6 2.6-6.7 1-9-1.4-2.1-4.4-2-6-.6z", "M12 7.5c0-2 .8-3.6 2.6-4.5"]],
+    "Carnes y pescado": ["meat", ["M5 12c2.4-3.3 5.6-5 9-5 3 0 5.6 1.7 7.5 5-1.9 3.3-4.5 5-7.5 5-3.4 0-6.6-1.7-9-5z", "M5 12 2 8.5v7z", "M16.5 11h.01"]],
+    "Lácteos y huevos": ["dairy", ["M8 2.5h8v3.5l2 3V20a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 20V9l2-3z", "M6 9h12", "M10 13.5h4"]],
+    "Despensa": ["pantry", ["M7.5 3h9v3h-9z", "M6.5 6h11a1 1 0 0 1 1 1v12a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2V7a1 1 0 0 1 1-1z", "M5.5 11h13"]],
+    "Bebidas": ["drinks", ["M6 8.5h12l-1.4 11.3a1.5 1.5 0 0 1-1.5 1.2H8.9a1.5 1.5 0 0 1-1.5-1.2z", "M12 8.5 14 2.5h3"]],
+    "Aseo y hogar": ["home", ["M11 3.5l1.7 4.3 4.3 1.7-4.3 1.7L11 15.5l-1.7-4.3L5 9.5l4.3-1.7z", "M18 14l.9 2.1 2.1.9-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"]],
+    "Mis productos": ["mine", ["M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z", "M7.5 7.5h.01"]],
+    "Otros": ["other", ["M6 7h12l1 13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z", "M9 7a3 3 0 0 1 6 0"]],
+  };
+  function catTile(cat, small) {
+    const [slug, paths] = CAT_STYLE[cat] || CAT_STYLE.Otros;
+    return h("span", { class: "cat-tile c-" + slug + (small ? " sm" : ""), "aria-hidden": "true" }, icon(small ? 15 : 18, ...paths));
+  }
+  const catClass = (cat) => "c-" + (CAT_STYLE[cat] || CAT_STYLE.Otros)[0];
+
+  /* ---------- Movimiento ---------- */
+  const reducedMotion = () => window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let fx = { added: new Set(), toggled: null, bumped: null, view: false }; // qué animar en el próximo render
+  let lastHero = null; // último valor mostrado en la tarjeta principal, para animar el cambio
+
+  // Barra de progreso animada con transform (no con width): parte de "from" y llega a "to" (0..1)
+  function barFill(to, from) {
+    const fill = h("i");
+    const end = Math.max(0, Math.min(1, to));
+    const start = reducedMotion() || from == null ? end : Math.max(0, Math.min(1, from));
+    fill.style.transform = "scaleX(" + start + ")";
+    if (start !== end) requestAnimationFrame(() => requestAnimationFrame(() => (fill.style.transform = "scaleX(" + end + ")")));
+    return h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(end * 100)) }, fill);
+  }
+
+  // Cuenta el número desde el valor anterior hasta el nuevo (desacelerando al final)
+  function countTo(el, from, to) {
+    if (reducedMotion() || from == null || from === to) { el.textContent = money(to); return; }
+    const t0 = performance.now(), dur = 480;
+    el.textContent = money(from);
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = money(Math.round(from + (to - from) * e));
+      if (p < 1) requestAnimationFrame(step);
+      else el.textContent = money(to);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // Dato inválido: aviso + sacudida del campo + foco
+  function invalid(input, msg) {
+    toast(msg);
+    if (!input) return;
+    input.setAttribute("aria-invalid", "true");
+    input.classList.remove("shake");
+    void input.offsetWidth;
+    input.classList.add("shake");
+    input.focus();
+    input.addEventListener("input", () => input.removeAttribute("aria-invalid"), { once: true });
   }
 
   const ICONS = {
@@ -97,8 +157,11 @@
     const el = $("toast");
     el.textContent = msg;
     el.hidden = false;
+    el.classList.remove("show");
+    void el.offsetWidth; // reinicia la animación de entrada
+    el.classList.add("show");
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => (el.hidden = true), 1600);
+    toast.timer = setTimeout(() => (el.hidden = true), 1800);
   }
 
   const total = () => state.list.reduce((s, i) => s + i.price * i.qty, 0);
@@ -199,7 +262,11 @@
     btn.replaceChildren();
     if (!state.region) { btn.hidden = true; return; }
     btn.hidden = false;
-    btn.append(state.town ? state.town + ", " + state.region : state.region);
+    const place = state.town ? state.town + ", " + state.region : state.region;
+    btn.setAttribute("aria-label", t("a11y.loc", { place }));
+    btn.append(
+      icon(14, "M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z", "M12 7.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"),
+      h("span", null, place));
   }
 
   function render() {
@@ -208,10 +275,14 @@
     $("btn-add").hidden = view !== "list";
     const root = $("view");
     root.replaceChildren();
+    root.classList.remove("view-enter");
+    if (fx.view) { void root.offsetWidth; root.classList.add("view-enter"); }
     VIEWS[view](root);
+    fx = { added: new Set(), toggled: null, bumped: null, view: false };
   }
 
   function go(next) {
+    if (next !== view) fx.view = true;
     view = next;
     closeOverlay();
     render();
@@ -222,8 +293,22 @@
   let overlayOpen = false;
   let usingHistory = false;
 
+  // Mostrar y ocultar con animación de salida (las salidas son más cortas que las entradas)
+  const outTimers = new Map();
+  function showEl(el) {
+    clearTimeout(outTimers.get(el));
+    el.classList.remove("out");
+    el.hidden = false;
+  }
+  function hideEl(el) {
+    if (el.hidden) return;
+    if (reducedMotion()) { el.hidden = true; return; }
+    el.classList.add("out");
+    outTimers.set(el, setTimeout(() => { el.hidden = true; el.classList.remove("out"); }, 200));
+  }
+
   function pushOverlay() {
-    $("scrim").hidden = false;
+    showEl($("scrim"));
     if (!overlayOpen) {
       overlayOpen = true;
       try { history.pushState({ overlay: 1 }, ""); usingHistory = true; } catch (e) { usingHistory = false; }
@@ -234,7 +319,7 @@
     $("drawer").hidden = true;
     const sheet = $("sheet");
     sheet.replaceChildren(node);
-    sheet.hidden = false;
+    showEl(sheet);
     pushOverlay();
   }
 
@@ -243,9 +328,9 @@
   function hideOverlay() {
     overlayOpen = false;
     closing = false;
-    $("sheet").hidden = true;
-    $("drawer").hidden = true;
-    $("scrim").hidden = true;
+    hideEl($("sheet"));
+    hideEl($("drawer"));
+    hideEl($("scrim"));
   }
 
   function closeOverlay() {
@@ -270,11 +355,11 @@
     drawer.replaceChildren(
       h("div", { class: "drawer-head" }, t("menu")),
       h("nav", null, items.map(([id, label]) =>
-        h("button", { class: "menu-item" + (id === view ? " active" : ""), onclick: () => go(id) },
+        h("button", { class: "menu-item" + (id === view ? " active" : ""), "aria-current": id === view ? "page" : null, onclick: () => go(id) },
           icon(22, ...ICONS[id]), h("span", null, t(label)))))
     );
     $("sheet").hidden = true;
-    drawer.hidden = false;
+    showEl(drawer);
     pushOverlay();
   }
 
@@ -291,7 +376,7 @@
 
   /* ================= VISTA: Mi lista ================= */
   VIEWS.list = (root) => {
-    const summary = h("section", { class: "summary", "aria-live": "polite" });
+    const summary = h("section", { class: "hero summary" });
     summary.append(...summaryNodes(summary));
     root.append(summary, listNode());
     if (state.list.length) {
@@ -309,7 +394,9 @@
   function summaryNodes(box) {
     if (!state.budget) {
       box.classList.add("setup");
+      lastHero = null;
       return [
+        h("div", { class: "empty-art" }, icon(34, ...ICONS.budget)),
         h("div", { class: "big" }, t("setup.title")),
         h("p", null, t("setup.text")),
         h("button", { class: "btn", onclick: () => openBudget("trip") }, t("setup.btn")),
@@ -317,10 +404,15 @@
     }
     const s = status();
     box.classList.add(s.level);
+    const big = h("div", { class: "big" });
+    const prev = lastHero;
+    // solo se cuenta si no cambió de "te quedan" a "te pasaste" (el número cambiaría de sentido)
+    countTo(big, prev && (prev.left < 0) === (s.left < 0) ? Math.abs(prev.left) : null, Math.abs(s.left));
+    lastHero = { left: s.left, pct: s.pct };
     return [
       h("div", { class: "label" }, s.left < 0 ? t("over") : t("left")),
-      h("div", { class: "big" }, money(Math.abs(s.left))),
-      h("div", { class: "bar" }, h("i", { style: "width:" + Math.min(100, s.pct * 100) + "%" })),
+      big,
+      barFill(s.pct, prev ? prev.pct : 0),
       h("div", { class: "stats" },
         h("button", { class: "stat tap", onclick: () => openBudget("trip") },
           h("div", { class: "label" }, t("budget")), h("div", { class: "v" }, money(state.budget))),
@@ -329,33 +421,56 @@
     ];
   }
 
+  // Lista agrupada por categoría, cada grupo en una tarjeta con su color e icono
   function listNode() {
     const box = h("section", { class: "list" });
     if (!state.list.length) {
-      box.append(h("div", { class: "empty" }, t("list.empty")));
+      box.append(h("div", { class: "empty" },
+        h("div", { class: "empty-art" }, icon(34, "M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h9.2a1 1 0 0 0 1-.8L20 8H6.2", "M9 20h.01M17 20h.01")),
+        t("list.empty")));
       return box;
     }
+    const groups = new Map();
     for (const it of state.list) {
-      box.append(
-        h("div", { class: "item" + (it.done ? " done" : "") },
-          h("button", { class: "check", "aria-label": "✓", onclick: () => toggle(it.id) },
-            icon(14, "M5 12.5l4.5 4.5L19 7.5")),
-          h("button", { class: "info", onclick: () => openEdit(it.id) },
-            h("div", { class: "name" }, dn(it.name)),
-            h("div", { class: "sub" }, money(it.price) + " / " + du(it.unit))),
-          h("div", { class: "stepper" },
-            h("button", { "aria-label": "−", onclick: () => changeQty(it.id, -1) }, "−"),
-            h("span", null, fmtQty(it.qty)),
-            h("button", { "aria-label": "+", onclick: () => changeQty(it.id, 1) }, "+")),
-          h("div", { class: "total" }, money(it.price * it.qty)))
-      );
+      const c = catOf(it.name);
+      if (!groups.has(c)) groups.set(c, []);
+      groups.get(c).push(it);
+    }
+    const ordered = [...groups.keys()].sort((a, b) => CAT_ORDER.indexOf(a) - CAT_ORDER.indexOf(b));
+    for (const cat of ordered) {
+      const items = groups.get(cat);
+      const sub = items.reduce((s, i) => s + i.price * i.qty, 0);
+      box.append(h("div", { class: "group " + catClass(cat) },
+        h("div", { class: "group-head" },
+          catTile(cat, true),
+          h("span", { class: "gname" }, dc(cat)),
+          h("span", { class: "gsum" }, money(sub))),
+        items.map(itemNode)));
     }
     return box;
   }
 
+  function itemNode(it) {
+    const name = dn(it.name);
+    const toggled = fx.toggled === it.id && it.done;
+    return h("div", { class: "item" + (it.done ? " done" : "") + (fx.added.has(it.id) ? " enter" : "") },
+      h("button", { class: "check" + (toggled ? " pop" : ""), role: "checkbox", "aria-checked": it.done ? "true" : "false", "aria-label": t("a11y.check", { name }), onclick: () => toggle(it.id) },
+        h("span", { class: "ring" }, icon(15, "M5 12.5l4.5 4.5L19 7.5"))),
+      h("button", { class: "info", onclick: () => openEdit(it.id) },
+        h("div", { class: "name" }, name),
+        h("div", { class: "sub" }, money(it.price) + " / " + du(it.unit))),
+      h("div", { class: "stepper" },
+        h("button", { "aria-label": t("a11y.less", { name }), onclick: () => changeQty(it.id, -1) },
+          h("span", { class: "knob" }, icon(16, "M6 12h12"))),
+        h("span", { class: fx.bumped === it.id ? "bump" : null }, fmtQty(it.qty)),
+        h("button", { "aria-label": t("a11y.more", { name }), onclick: () => changeQty(it.id, 1) },
+          h("span", { class: "knob" }, icon(16, "M12 6v12M6 12h12")))),
+      h("div", { class: "total" }, money(it.price * it.qty)));
+  }
+
   function toggle(id) {
     const it = state.list.find((i) => i.id === id);
-    if (it) { it.done = !it.done; save(); render(); }
+    if (it) { it.done = !it.done; fx.toggled = id; save(); render(); }
   }
 
   function changeQty(id, d) {
@@ -363,14 +478,19 @@
     if (!it) return;
     it.qty = round2(it.qty + d);
     if (it.qty <= 0) state.list = state.list.filter((i) => i.id !== id);
+    else fx.bumped = id;
     save();
     render();
   }
 
   function addToList(p, price) {
-    const found = state.list.find((i) => i.cid === p.id && i.price === price);
+    let found = state.list.find((i) => i.cid === p.id && i.price === price);
     if (found) found.qty = round2(found.qty + 1);
-    else state.list.push({ id: uid(), cid: p.id, name: p.name, unit: p.unit, price, qty: 1, done: false });
+    else {
+      found = { id: uid(), cid: p.id, name: p.name, unit: p.unit, price, qty: 1, done: false };
+      state.list.push(found);
+    }
+    fx.added.add(found.id);
     save();
     render();
   }
@@ -384,7 +504,7 @@
     const apply = () => {
       const empty = input.value.trim() === "";
       const n = empty ? 0 : parseNum(input.value);
-      if (!(n >= 0) || (kind === "trip" && !(n > 0))) { toast(t("err.amount")); return; }
+      if (!(n >= 0) || (kind === "trip" && !(n > 0))) { invalid(input, t("err.amount")); return; }
       state[field_] = n;
       save(); render(); closeSheet();
     };
@@ -456,13 +576,13 @@
       const matches = catalog().filter((p) => matchesQuery(p, q));
       let lastCat = null;
       for (const p of matches) {
-        if (p.cat !== lastCat) { results.append(h("div", { class: "cat" }, dc(p.cat))); lastCat = p.cat; }
+        if (p.cat !== lastCat) { results.append(h("div", { class: "cat" }, catTile(p.cat, true), dc(p.cat))); lastCat = p.cat; }
         const inList = state.list.filter((i) => i.cid === p.id).reduce((s, i) => s + i.qty, 0);
         results.append(
           h("button", { class: "row", onclick: () => pick(p) },
-            h("div", null,
+            h("div", { class: "grow" },
               h("span", { class: "n" }, dn(p.name)),
-              inList ? h("span", { class: "added" }, "× " + inList) : null,
+              inList ? h("span", { class: "added" }, "× " + fmtQty(inList)) : null,
               h("div", { class: "u" }, du(p.unit))),
             p.price != null
               ? h("div", { class: "p" }, money(p.price))
@@ -473,7 +593,8 @@
       if (typed && !matches.some((p) => norm(dn(p.name)) === q || norm(p.name) === q)) {
         results.append(
           h("button", { class: "row", onclick: () => openCreate(typed, "add") },
-            h("div", null, h("span", { class: "n" }, t("add.create", { name: typed })), h("div", { class: "u" }, t("add.createhint"))),
+            catTile("Mis productos"),
+            h("div", { class: "grow" }, h("span", { class: "n" }, t("add.create", { name: typed })), h("div", { class: "u" }, t("add.createhint"))),
             h("div", { class: "p" }, t("add.new")))
         );
       }
@@ -497,7 +618,7 @@
     const input = priceInput();
     const apply = () => {
       const price = parseNum(input.value);
-      if (!(price >= 0) || input.value === "") { toast(t("err.price")); return; }
+      if (!(price >= 0) || input.value === "") { invalid(input, t("err.price")); return; }
       rememberPrice(p.name, p.unit, price);
       addToList(p, price);
       toast(t("add.added", { name: dn(p.name) }));
@@ -524,8 +645,8 @@
     const create = () => {
       const n = nameIn.value.trim();
       const price = parseNum(priceIn.value);
-      if (!n) { toast(t("err.name")); return; }
-      if (!(price >= 0) || priceIn.value === "") { toast(t("err.price")); return; }
+      if (!n) { invalid(nameIn, t("err.name")); return; }
+      if (!(price >= 0) || priceIn.value === "") { invalid(priceIn, t("err.price")); return; }
       const unit = unitIn.value.trim() || "unidad";
       let p = window.CATALOG.concat(state.custom).find((x) => norm(x.name) === norm(n) || norm(dn(x.name)) === norm(n));
       if (!p) {
@@ -563,7 +684,8 @@
     const apply = () => {
       const price = parseNum(priceIn.value);
       const qty = round2(parseNum(qtyIn.value));
-      if (!(price >= 0) || priceIn.value === "" || !(qty > 0)) { toast(t("err.check")); return; }
+      if (!(price >= 0) || priceIn.value === "") { invalid(priceIn, t("err.check")); return; }
+      if (!(qty > 0)) { invalid(qtyIn, t("err.check")); return; }
       const k = knownPrice(it.name);
       if (!k || k.price !== price) rememberPrice(it.name, it.unit, price);
       it.price = price; it.qty = qty;
@@ -609,7 +731,9 @@
       const when = new Date(p.at).toLocaleDateString(loc, { weekday: "short", day: "numeric", month: "short" });
       box.append(
         h("button", { class: "row", onclick: () => openPurchase(p) },
-          h("div", null, h("span", { class: "n" }, when),
+          h("span", { class: "cat-tile tile-brand", "aria-hidden": "true" },
+            icon(18, "M6 3h12v18l-3-2-3 2-3-2-3 2z", "M9 8h6M9 12h6")),
+          h("div", { class: "grow" }, h("span", { class: "n" }, when),
             h("div", { class: "u" }, p.count === 1 ? t("spend.one") : t("spend.many", { n: p.count }))),
           h("div", { class: "p dark" }, money(p.total)))
       );
@@ -642,22 +766,26 @@
       h("div", { class: "cats-title" }, t("spend.cats")),
       cats.map(([cat, v]) => {
         const pct = sum > 0 ? (v / sum) * 100 : 0;
-        return h("div", { class: "cat-row" },
-          h("div", { class: "cat-line" },
-            h("span", null, dc(cat)),
-            h("span", null, money(v) + " · " + Math.round(pct) + "%")),
-          h("div", { class: "bar thin" }, h("i", { style: "width:" + pct + "%" })));
+        const bar = barFill(pct / 100, 0);
+        bar.classList.add("thin");
+        return h("div", { class: "cat-row " + catClass(cat) },
+          catTile(cat),
+          h("div", { class: "grow" },
+            h("div", { class: "cat-line" },
+              h("span", null, dc(cat)),
+              h("span", null, money(v) + " · " + Math.round(pct) + "%")),
+            bar));
       }));
   }
 
   function periodCard(label, spent, budget, kind) {
-    const card = h("button", { class: "summary period", onclick: () => openBudget(kind) });
+    const card = h("button", { class: "period", onclick: () => openBudget(kind) });
     card.append(h("div", { class: "label" }, label), h("div", { class: "big" }, money(spent)));
     if (budget > 0) {
       const s = level(spent, budget);
       card.classList.add(s.level);
       card.append(
-        h("div", { class: "bar" }, h("i", { style: "width:" + Math.min(100, s.pct * 100) + "%" })),
+        barFill(s.pct, 0),
         h("div", { class: "period-note" },
           t("spend.of", { total: money(budget) }) + " · " + (s.left < 0 ? t("over") : t("left")) + " " + money(Math.abs(s.left))));
     } else {
@@ -695,8 +823,12 @@
       const k = knownPrice(i.name);
       const price = k ? k.price : i.price;
       const found = state.list.find((x) => x.cid === prod.id && x.price === price);
-      if (found) found.qty = round2(found.qty + i.qty);
-      else state.list.push({ id: uid(), cid: prod.id, name: i.name, unit: i.unit, price, qty: i.qty, done: false });
+      if (found) { found.qty = round2(found.qty + i.qty); fx.added.add(found.id); }
+      else {
+        const it = { id: uid(), cid: prod.id, name: i.name, unit: i.unit, price, qty: i.qty, done: false };
+        state.list.push(it);
+        fx.added.add(it.id);
+      }
     }
     save();
     go("list"); // también cierra la hoja
@@ -722,7 +854,8 @@
         const when = new Date(e.at).toLocaleDateString(dateLocale(), { day: "numeric", month: "short" });
         results.append(
           h("button", { class: "row", onclick: () => openPriceEdit(e) },
-            h("div", null, h("span", { class: "n" }, dn(e.name)),
+            catTile(catOf(e.name)),
+            h("div", { class: "grow" }, h("span", { class: "n" }, dn(e.name)),
               h("div", { class: "u" }, du(e.unit) + " · " + t("products.updated", { date: when }))),
             h("div", { class: "right" },
               h("div", { class: "p" }, money(e.price)),
@@ -751,7 +884,7 @@
     const input = priceInput(e.price);
     const apply = () => {
       const price = parseNum(input.value);
-      if (!(price >= 0) || input.value === "") { toast(t("err.price")); return; }
+      if (!(price >= 0) || input.value === "") { invalid(input, t("err.price")); return; }
       rememberPrice(e.name, e.unit, price);
       render(); closeSheet();
       toast(t("pe.updated"));
@@ -846,7 +979,7 @@
     const area = h("textarea", { rows: "9", placeholder: "{ … }" });
     const apply = () => {
       const next = parseBackup(area.value);
-      if (!next) { toast(t("bk.import.err")); return; }
+      if (!next) { invalid(area, t("bk.import.err")); return; }
       if (!confirm(t("bk.import.confirm"))) return;
       state = next;
       save(); render(); closeSheet();
@@ -871,7 +1004,7 @@
     const town = h("input", { type: "text", placeholder: t("set.townph"), value: state.town, autocomplete: "off" });
 
     const apply = () => {
-      if (!sel.value) { toast(t("err.region")); return; }
+      if (!sel.value) { invalid(sel, t("err.region")); return; }
       state.region = sel.value;
       state.town = town.value.trim();
       save(); render(); closeSheet();
