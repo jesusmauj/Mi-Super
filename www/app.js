@@ -4,24 +4,45 @@
   /* ---------- Estado ---------- */
   const KEY = "misuper.v1";
   const CURRENCIES = { COP: "es-CO", USD: "en-US", MXN: "es-MX", EUR: "es-ES", ARS: "es-AR", PEN: "es-PE", CLP: "es-CL" };
+  const LANGS = { es: "Español", en: "English" };
 
   // prices: { "<departamento>": { "<nombre normalizado>": { name, unit, price, at } } }
-  const defaults = { budget: 0, currency: "COP", region: "", town: "", prices: {}, custom: [], list: [] };
+  // history: [{ id, at, total, count, items: [{ name, unit, qty, price }] }]
+  const defaults = {
+    lang: "", budget: 0, budgetWeek: 0, budgetMonth: 0, currency: "COP", region: "", town: "",
+    prices: {}, custom: [], list: [], history: [],
+  };
   let state = load();
+  let view = "list";
 
   function load() {
     try {
       const raw = localStorage.getItem(KEY);
       const s = Object.assign({}, defaults, raw ? JSON.parse(raw) : {});
       if (!s.prices || typeof s.prices !== "object") s.prices = {};
+      if (!Array.isArray(s.history)) s.history = [];
+      if (!LANGS[s.lang]) s.lang = (navigator.language || "es").toLowerCase().startsWith("en") ? "en" : "es";
       return s;
     } catch (e) {
-      return Object.assign({}, defaults, { prices: {} });
+      return Object.assign({}, defaults, { prices: {}, history: [], lang: "es" });
     }
   }
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* sin almacenamiento */ }
   }
+
+  /* ---------- Idioma ---------- */
+  function t(key, vars) {
+    const pack = window.I18N[state.lang] || {};
+    let s = pack[key] != null ? pack[key] : window.I18N.es[key] != null ? window.I18N.es[key] : key;
+    if (vars && typeof s === "string") for (const k in vars) s = s.split("{" + k + "}").join(vars[k]);
+    return s;
+  }
+  const tr = (group, v) => (window.I18N[group][state.lang] && window.I18N[group][state.lang][v]) || v;
+  const dn = (name) => tr("names", name); // nombre de producto
+  const du = (unit) => tr("units", unit); // unidad
+  const dc = (cat) => tr("cats", cat); // categoría
+  const dateLocale = () => (state.lang === "en" ? "en-US" : "es-CO");
 
   /* ---------- Utilidades ---------- */
   const $ = (id) => document.getElementById(id);
@@ -39,11 +60,14 @@
     }
   }
 
+  const SVG_TAGS = new Set(["svg", "path", "circle"]);
   function h(tag, props, ...kids) {
-    const el = document.createElement(tag);
+    const el = SVG_TAGS.has(tag)
+      ? document.createElementNS("http://www.w3.org/2000/svg", tag)
+      : document.createElement(tag);
     for (const [k, v] of Object.entries(props || {})) {
       if (v == null || v === false) continue;
-      if (k === "class") el.className = v;
+      if (k === "class") el.setAttribute("class", v);
       else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
       else el.setAttribute(k, v === true ? "" : v);
     }
@@ -54,36 +78,47 @@
     return el;
   }
 
+  function icon(size, ...paths) {
+    return h("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" },
+      paths.map((d) => h("path", { d })));
+  }
+
+  const ICONS = {
+    list: ["M9 6h11M9 12h11M9 18h11", "M4 6h.01M4 12h.01M4 18h.01"],
+    spend: ["M4 20V10", "M10 20V4", "M16 20v-7", "M21 20H3"],
+    products: ["M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z", "M7.5 7.5h.01"],
+    tips: ["M9 18h6M10 21h4", "M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"],
+    settings: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 4v6M9 14v6"],
+  };
+
   function toast(msg) {
-    const t = $("toast");
-    t.textContent = msg;
-    t.hidden = false;
+    const el = $("toast");
+    el.textContent = msg;
+    el.hidden = false;
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => (t.hidden = true), 1600);
+    toast.timer = setTimeout(() => (el.hidden = true), 1600);
   }
 
   const total = () => state.list.reduce((s, i) => s + i.price * i.qty, 0);
 
-  function status() {
-    const spent = total();
-    const left = state.budget - spent;
-    const pct = state.budget > 0 ? spent / state.budget : 0;
+  function level(spent, budget) {
+    const left = budget - spent;
+    const pct = budget > 0 ? spent / budget : 0;
     return { spent, left, pct, level: left < 0 ? "over" : pct >= 0.8 ? "warn" : "ok" };
   }
+  const status = () => level(total(), state.budget);
 
   /* ---------- Precios que la app recuerda ---------- */
   function placePrices() {
     if (!state.prices[state.region]) state.prices[state.region] = {};
     return state.prices[state.region];
   }
-
   const knownPrice = (name) => placePrices()[norm(name)] || null;
 
   function rememberPrice(name, unit, price) {
     placePrices()[norm(name)] = { name, unit, price, at: Date.now() };
     save();
   }
-
   function forgetPrice(name) {
     delete placePrices()[norm(name)];
     save();
@@ -96,62 +131,25 @@
       return Object.assign({}, p, { price: k ? k.price : null });
     });
   }
+  const matchesQuery = (p, q) => !q || norm(p.name).includes(q) || norm(dn(p.name)).includes(q) || norm(dc(p.cat)).includes(q);
 
-  /* ---------- Pantalla principal ---------- */
-  function renderSummary() {
-    const box = $("summary");
-    box.replaceChildren();
-    box.className = "summary";
-
-    if (!state.budget) {
-      box.classList.add("setup");
-      box.append(
-        h("div", { class: "big" }, "Define tu presupuesto"),
-        h("p", null, "Elige cuánto quieres gastar y verás en vivo cuánto te queda."),
-        h("button", { class: "btn", onclick: openBudget }, "Establecer presupuesto")
-      );
-      return;
-    }
-
-    const s = status();
-    box.classList.add(s.level);
-    box.append(
-      h("div", { class: "label" }, s.left < 0 ? "Te pasaste por" : "Te quedan"),
-      h("div", { class: "big" }, money(Math.abs(s.left))),
-      h("div", { class: "bar" }, h("i", { style: "width:" + Math.min(100, s.pct * 100) + "%" })),
-      h("div", { class: "stats" },
-        h("button", { class: "stat tap", onclick: openBudget },
-          h("div", { class: "label" }, "Presupuesto"), h("div", { class: "v" }, money(state.budget))),
-        h("div", { class: "stat" },
-          h("div", { class: "label" }, "En tu lista"), h("div", { class: "v" }, money(s.spent)))
-      )
-    );
+  /* ---------- Gastos por periodo ---------- */
+  function weekStart() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // lunes
+    return d;
   }
+  const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); };
+  const spentSince = (from) => state.history.filter((p) => p.at >= from.getTime()).reduce((s, p) => s + p.total, 0);
 
-  function renderList() {
-    const box = $("list");
-    box.replaceChildren();
-    if (!state.list.length) {
-      box.append(h("div", { class: "empty" }, "Tu lista está vacía. Toca «Agregar producto» para empezar."));
-      return;
-    }
-    for (const it of state.list) {
-      box.append(
-        h("div", { class: "item" + (it.done ? " done" : "") },
-          h("button", { class: "check", "aria-label": "Marcar como comprado", onclick: () => toggle(it.id) },
-            h("svg", { viewBox: "0 0 24 24", width: "14", height: "14", fill: "none", stroke: "currentColor", "stroke-width": "3.2", "stroke-linecap": "round", "stroke-linejoin": "round" },
-              h("path", { d: "M5 12.5l4.5 4.5L19 7.5" }))),
-          h("button", { class: "info", onclick: () => openEdit(it.id) },
-            h("div", { class: "name" }, it.name),
-            h("div", { class: "sub" }, money(it.price) + " / " + it.unit)),
-          h("div", { class: "stepper" },
-            h("button", { "aria-label": "Menos", onclick: () => changeQty(it.id, -1) }, "−"),
-            h("span", null, it.qty),
-            h("button", { "aria-label": "Más", onclick: () => changeQty(it.id, 1) }, "+")),
-          h("div", { class: "total" }, money(it.price * it.qty))
-        )
-      );
-    }
+  /* ---------- Navegación y render ---------- */
+  const VIEWS = {};
+
+  function applyStatic() {
+    document.documentElement.lang = state.lang;
+    $("btn-menu").setAttribute("aria-label", t("menu"));
+    $("fab-label").textContent = t("add");
   }
 
   function renderLocation() {
@@ -163,9 +161,141 @@
   }
 
   function render() {
+    applyStatic();
     renderLocation();
-    renderSummary();
-    renderList();
+    $("btn-add").hidden = view !== "list";
+    const root = $("view");
+    root.replaceChildren();
+    VIEWS[view](root);
+  }
+
+  function go(next) {
+    view = next;
+    closeOverlay();
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  /* ---------- Superposiciones: hoja inferior y menú lateral ---------- */
+  let overlayOpen = false;
+  let usingHistory = false;
+
+  function pushOverlay() {
+    $("scrim").hidden = false;
+    if (!overlayOpen) {
+      overlayOpen = true;
+      try { history.pushState({ overlay: 1 }, ""); usingHistory = true; } catch (e) { usingHistory = false; }
+    }
+  }
+
+  function showSheet(node) {
+    $("drawer").hidden = true;
+    const sheet = $("sheet");
+    sheet.replaceChildren(node);
+    sheet.hidden = false;
+    pushOverlay();
+  }
+
+  function hideOverlay() {
+    overlayOpen = false;
+    $("sheet").hidden = true;
+    $("drawer").hidden = true;
+    $("scrim").hidden = true;
+  }
+
+  function closeOverlay() {
+    if (!overlayOpen || !state.region) return; // la primera vez hay que elegir ubicación
+    if (usingHistory) history.back();
+    else hideOverlay();
+  }
+  const closeSheet = closeOverlay;
+
+  window.addEventListener("popstate", () => {
+    hideOverlay();
+    if (!state.region) openRegion();
+  });
+  $("scrim").addEventListener("click", closeOverlay);
+
+  function openMenu() {
+    const items = [["list", "nav.list"], ["spend", "nav.spend"], ["products", "nav.products"], ["tips", "nav.tips"], ["settings", "nav.settings"]];
+    const drawer = $("drawer");
+    drawer.replaceChildren(
+      h("div", { class: "drawer-head" }, t("menu")),
+      h("nav", null, items.map(([id, label]) =>
+        h("button", { class: "menu-item" + (id === view ? " active" : ""), onclick: () => go(id) },
+          icon(22, ...ICONS[id]), h("span", null, t(label)))))
+    );
+    $("sheet").hidden = true;
+    drawer.hidden = false;
+    pushOverlay();
+  }
+
+  /* ---------- Formularios ---------- */
+  const field = (label, input) => h("label", { class: "field" }, h("span", null, label), input);
+
+  function parseNum(v) {
+    const n = Number(String(v).replace(",", "."));
+    return Number.isFinite(n) ? n : NaN;
+  }
+  const priceInput = (value) =>
+    h("input", { type: "number", inputmode: "decimal", min: "0", placeholder: "3500", value: value == null ? "" : value });
+  const onEnter = (input, fn) => input.addEventListener("keydown", (e) => e.key === "Enter" && fn());
+
+  /* ================= VISTA: Mi lista ================= */
+  VIEWS.list = (root) => {
+    const summary = h("section", { class: "summary", "aria-live": "polite" });
+    summary.append(...summaryNodes(summary));
+    root.append(summary, listNode());
+    if (state.list.length) {
+      root.append(h("button", { class: "btn ghost block finish", onclick: openFinish }, t("list.finish")));
+    }
+  };
+
+  function summaryNodes(box) {
+    if (!state.budget) {
+      box.classList.add("setup");
+      return [
+        h("div", { class: "big" }, t("setup.title")),
+        h("p", null, t("setup.text")),
+        h("button", { class: "btn", onclick: () => openBudget("trip") }, t("setup.btn")),
+      ];
+    }
+    const s = status();
+    box.classList.add(s.level);
+    return [
+      h("div", { class: "label" }, s.left < 0 ? t("over") : t("left")),
+      h("div", { class: "big" }, money(Math.abs(s.left))),
+      h("div", { class: "bar" }, h("i", { style: "width:" + Math.min(100, s.pct * 100) + "%" })),
+      h("div", { class: "stats" },
+        h("button", { class: "stat tap", onclick: () => openBudget("trip") },
+          h("div", { class: "label" }, t("budget")), h("div", { class: "v" }, money(state.budget))),
+        h("div", { class: "stat" },
+          h("div", { class: "label" }, t("inlist")), h("div", { class: "v" }, money(s.spent))))
+    ];
+  }
+
+  function listNode() {
+    const box = h("section", { class: "list" });
+    if (!state.list.length) {
+      box.append(h("div", { class: "empty" }, t("list.empty")));
+      return box;
+    }
+    for (const it of state.list) {
+      box.append(
+        h("div", { class: "item" + (it.done ? " done" : "") },
+          h("button", { class: "check", "aria-label": "✓", onclick: () => toggle(it.id) },
+            icon(14, "M5 12.5l4.5 4.5L19 7.5")),
+          h("button", { class: "info", onclick: () => openEdit(it.id) },
+            h("div", { class: "name" }, dn(it.name)),
+            h("div", { class: "sub" }, money(it.price) + " / " + du(it.unit))),
+          h("div", { class: "stepper" },
+            h("button", { "aria-label": "−", onclick: () => changeQty(it.id, -1) }, "−"),
+            h("span", null, it.qty),
+            h("button", { "aria-label": "+", onclick: () => changeQty(it.id, 1) }, "+")),
+          h("div", { class: "total" }, money(it.price * it.qty)))
+      );
+    }
+    return box;
   }
 
   function toggle(id) {
@@ -190,94 +320,74 @@
     render();
   }
 
-  /* ---------- Hoja inferior ---------- */
-  let sheetOpen = false;
-  let usingHistory = false;
-
-  function showSheet(node) {
-    const sheet = $("sheet");
-    sheet.replaceChildren(node);
-    sheet.hidden = false;
-    $("scrim").hidden = false;
-    if (!sheetOpen) {
-      sheetOpen = true;
-      try { history.pushState({ sheet: 1 }, ""); usingHistory = true; } catch (e) { usingHistory = false; }
-    }
-  }
-
-  function hideSheet() {
-    sheetOpen = false;
-    $("sheet").hidden = true;
-    $("scrim").hidden = true;
-  }
-
-  function closeSheet() {
-    if (!sheetOpen || !state.region) return; // la primera vez hay que elegir ubicación
-    if (usingHistory) history.back();
-    else hideSheet();
-  }
-
-  window.addEventListener("popstate", () => {
-    hideSheet();
-    if (!state.region) openRegion(true);
-  });
-  $("scrim").addEventListener("click", closeSheet);
-
-  function field(label, input) {
-    return h("label", { class: "field" }, h("span", null, label), input);
-  }
-
-  function parseNum(v) {
-    const n = Number(String(v).replace(",", "."));
-    return Number.isFinite(n) ? n : NaN;
-  }
-
-  const priceInput = (value) =>
-    h("input", { type: "number", inputmode: "decimal", min: "0", placeholder: "Ej: 3500", value: value == null ? "" : value });
-
-  function onEnter(input, fn) {
-    input.addEventListener("keydown", (e) => e.key === "Enter" && fn());
-  }
-
-  /* Presupuesto */
-  function openBudget() {
-    const input = h("input", { type: "number", inputmode: "decimal", min: "0", placeholder: "Ej: 300000", value: state.budget || "" });
+  /* Presupuestos: de la compra, semanal o mensual */
+  function openBudget(kind) {
+    const field_ = { trip: "budget", week: "budgetWeek", month: "budgetMonth" }[kind];
+    const title = { trip: "budget.title", week: "budget.week.title", month: "budget.month.title" }[kind];
+    const hint = { trip: "budget.trip", week: "budget.week", month: "budget.month" }[kind];
+    const input = h("input", { type: "number", inputmode: "decimal", min: "0", placeholder: "300000", value: state[field_] || "" });
     const apply = () => {
-      const n = parseNum(input.value);
-      if (!(n > 0)) { toast("Escribe un monto mayor que 0"); return; }
-      state.budget = n;
+      const empty = input.value.trim() === "";
+      const n = empty ? 0 : parseNum(input.value);
+      if (!(n >= 0) || (kind === "trip" && !(n > 0))) { toast(t("err.amount")); return; }
+      state[field_] = n;
       save(); render(); closeSheet();
     };
     showSheet(h("div", null,
-      h("h2", null, "Presupuesto"),
-      h("div", { class: "hint" }, "¿Cuánto quieres gastar en esta compra?"),
-      field("Monto (" + state.currency + ")", input),
+      h("h2", null, t(title)),
+      h("div", { class: "hint" }, t(hint) + (kind === "trip" ? "" : " " + t("budget.clear"))),
+      field(t("amount", { cur: state.currency }), input),
       h("div", { class: "actions" },
-        h("button", { class: "btn ghost", onclick: closeSheet }, "Cancelar"),
-        h("button", { class: "btn", onclick: apply }, "Guardar"))
+        h("button", { class: "btn ghost", onclick: closeSheet }, t("cancel")),
+        h("button", { class: "btn", onclick: apply }, t("save")))
     ));
     onEnter(input, apply);
     setTimeout(() => input.focus(), 50);
   }
 
-  /* Agregar producto */
+  /* Terminar compra: pasa los productos al historial de gastos */
+  function openFinish() {
+    const checked = state.list.filter((i) => i.done);
+    const items = checked.length ? checked : state.list;
+    const sum = items.reduce((s, i) => s + i.price * i.qty, 0);
+    const apply = () => {
+      state.history.unshift({
+        id: uid(), at: Date.now(), total: sum, count: items.length,
+        items: items.map((i) => ({ name: i.name, unit: i.unit, qty: i.qty, price: i.price })),
+      });
+      const ids = new Set(items.map((i) => i.id));
+      state.list = state.list.filter((i) => !ids.has(i.id));
+      save(); render(); closeSheet();
+      toast(t("finish.toast"));
+    };
+    showSheet(h("div", null,
+      h("h2", null, t("finish.title")),
+      h("div", { class: "hint" }, t("finish.text", { n: items.length, total: money(sum) }) +
+        (checked.length && checked.length < state.list.length ? " " + t("finish.rest") : "")),
+      h("div", { class: "actions" },
+        h("button", { class: "btn ghost", onclick: closeSheet }, t("cancel")),
+        h("button", { class: "btn", onclick: apply }, t("finish.btn")))
+    ));
+  }
+
+  /* Agregar producto a la lista */
   function openAdd(prefill) {
-    const search = h("input", { type: "search", placeholder: "Buscar: arroz, leche, pollo…", autocomplete: "off", value: prefill || "" });
+    const search = h("input", { type: "search", placeholder: t("add.search"), autocomplete: "off", value: prefill || "" });
     const hint = h("div", { class: "hint" });
     const results = h("div", { class: "results" });
 
     function updateHint() {
       hint.className = "hint";
-      if (!state.budget) { hint.textContent = "Sin presupuesto definido"; return; }
+      if (!state.budget) { hint.textContent = t("add.nobudget"); return; }
       const s = status();
-      hint.textContent = s.left < 0 ? "Te pasaste por " + money(-s.left) : "Te quedan " + money(s.left);
+      hint.textContent = (s.left < 0 ? t("over") : t("left")) + " " + money(Math.abs(s.left));
       if (s.level !== "ok") hint.classList.add(s.level);
     }
 
     function pick(p) {
       if (p.price != null) {
         addToList(p, p.price);
-        toast(p.name + " agregado");
+        toast(t("add.added", { name: dn(p.name) }));
         updateHint();
         drawResults();
       } else {
@@ -288,40 +398,40 @@
     function drawResults() {
       const q = norm(search.value.trim());
       results.replaceChildren();
-      const matches = catalog().filter((p) => !q || norm(p.name).includes(q) || norm(p.cat).includes(q));
+      const matches = catalog().filter((p) => matchesQuery(p, q));
       let lastCat = null;
       for (const p of matches) {
-        if (p.cat !== lastCat) { results.append(h("div", { class: "cat" }, p.cat)); lastCat = p.cat; }
+        if (p.cat !== lastCat) { results.append(h("div", { class: "cat" }, dc(p.cat))); lastCat = p.cat; }
         const inList = state.list.filter((i) => i.cid === p.id).reduce((s, i) => s + i.qty, 0);
         results.append(
           h("button", { class: "row", onclick: () => pick(p) },
             h("div", null,
-              h("span", { class: "n" }, p.name),
+              h("span", { class: "n" }, dn(p.name)),
               inList ? h("span", { class: "added" }, "× " + inList) : null,
-              h("div", { class: "u" }, p.unit)),
+              h("div", { class: "u" }, du(p.unit))),
             p.price != null
               ? h("div", { class: "p" }, money(p.price))
-              : h("div", { class: "p none" }, "Poner precio"))
+              : h("div", { class: "p none" }, t("add.setprice")))
         );
       }
       const typed = search.value.trim();
-      if (typed && !matches.some((p) => norm(p.name) === q)) {
+      if (typed && !matches.some((p) => norm(dn(p.name)) === q || norm(p.name) === q)) {
         results.append(
           h("button", { class: "row", onclick: () => openCreate(typed, "add") },
-            h("div", null, h("span", { class: "n" }, "Crear «" + typed + "»"), h("div", { class: "u" }, "Producto que no está en el catálogo")),
-            h("div", { class: "p" }, "+ Nuevo"))
+            h("div", null, h("span", { class: "n" }, t("add.create", { name: typed })), h("div", { class: "u" }, t("add.createhint"))),
+            h("div", { class: "p" }, t("add.new")))
         );
       }
-      if (!matches.length && !typed) results.append(h("div", { class: "empty" }, "El catálogo está vacío."));
+      if (!matches.length && !typed) results.append(h("div", { class: "empty" }, t("add.empty")));
     }
 
     search.addEventListener("input", drawResults);
-    showSheet(h("div", { style: "display:flex;flex-direction:column;min-height:0;height:78vh" },
-      h("h2", null, "Agregar producto"),
+    showSheet(h("div", { class: "tall" },
+      h("h2", null, t("add.title")),
       hint,
       h("div", { class: "field search" }, search),
       results,
-      h("div", { class: "actions" }, h("button", { class: "btn", onclick: closeSheet }, "Listo"))
+      h("div", { class: "actions" }, h("button", { class: "btn", onclick: closeSheet }, t("done")))
     ));
     updateHint();
     drawResults();
@@ -332,19 +442,19 @@
     const input = priceInput();
     const apply = () => {
       const price = parseNum(input.value);
-      if (!(price >= 0) || input.value === "") { toast("Escribe el precio"); return; }
+      if (!(price >= 0) || input.value === "") { toast(t("err.price")); return; }
       rememberPrice(p.name, p.unit, price);
       addToList(p, price);
-      toast(p.name + " agregado");
+      toast(t("add.added", { name: dn(p.name) }));
       back();
     };
     showSheet(h("div", null,
-      h("h2", null, "¿A cuánto está " + p.name.toLowerCase() + "?"),
-      h("div", { class: "hint" }, "Precio por " + p.unit + ". Lo recordaremos para no volver a pedirlo."),
-      field("Precio (" + state.currency + ")", input),
+      h("h2", null, t("prompt.title", { name: dn(p.name).toLowerCase() })),
+      h("div", { class: "hint" }, t("prompt.hint", { unit: du(p.unit) })),
+      field(t("price", { cur: state.currency }), input),
       h("div", { class: "actions" },
-        h("button", { class: "btn ghost", onclick: back }, "Volver"),
-        h("button", { class: "btn", onclick: apply }, "Guardar y agregar"))
+        h("button", { class: "btn ghost", onclick: back }, t("back")),
+        h("button", { class: "btn", onclick: apply }, t("prompt.save")))
     ));
     onEnter(input, apply);
     setTimeout(() => input.focus(), 50);
@@ -352,17 +462,17 @@
 
   /* Producto nuevo. mode "add": lo agrega a la lista; mode "price": solo registra el precio */
   function openCreate(name, mode) {
-    const nameIn = h("input", { type: "text", value: name || "" });
+    const nameIn = h("input", { type: "text", value: name || "", placeholder: mode === "price" ? "Auyama" : "" });
     const priceIn = priceInput();
     const unitIn = h("input", { type: "text", value: "unidad" });
-    const back = () => (mode === "add" ? openAdd(name) : openPrices());
+    const back = () => (mode === "add" ? openAdd(name) : closeSheet());
     const create = () => {
       const n = nameIn.value.trim();
       const price = parseNum(priceIn.value);
-      if (!n) { toast("Escribe un nombre"); return; }
-      if (!(price >= 0) || priceIn.value === "") { toast("Escribe un precio"); return; }
+      if (!n) { toast(t("err.name")); return; }
+      if (!(price >= 0) || priceIn.value === "") { toast(t("err.price")); return; }
       const unit = unitIn.value.trim() || "unidad";
-      let p = window.CATALOG.concat(state.custom).find((x) => norm(x.name) === norm(n));
+      let p = window.CATALOG.concat(state.custom).find((x) => norm(x.name) === norm(n) || norm(dn(x.name)) === norm(n));
       if (!p) {
         p = { id: "u" + uid(), name: n, cat: "Mis productos", unit };
         state.custom.push(p);
@@ -370,22 +480,21 @@
       rememberPrice(p.name, p.unit, price);
       if (mode === "add") {
         addToList(p, price);
-        toast(n + " agregado");
+        toast(t("add.added", { name: dn(n) }));
         openAdd();
       } else {
-        save();
-        toast("Precio de " + n + " guardado");
-        openPrices();
+        save(); render(); closeSheet();
+        toast(t("saved", { name: n }));
       }
     };
     showSheet(h("div", null,
-      h("h2", null, "Producto nuevo"),
-      h("div", { class: "hint" }, "Se guarda con su precio para la próxima vez."),
-      field("Nombre", nameIn),
-      h("div", { class: "two" }, field("Precio", priceIn), field("Unidad", unitIn)),
+      h("h2", null, t("new.title")),
+      h("div", { class: "hint" }, t("new.hint")),
+      field(t("name"), nameIn),
+      h("div", { class: "two" }, field(t("price2"), priceIn), field(t("unit"), unitIn)),
       h("div", { class: "actions" },
-        h("button", { class: "btn ghost", onclick: back }, "Volver"),
-        h("button", { class: "btn", onclick: create }, mode === "add" ? "Crear y agregar" : "Guardar"))
+        h("button", { class: "btn ghost", onclick: back }, mode === "add" ? t("back") : t("cancel")),
+        h("button", { class: "btn", onclick: create }, mode === "add" ? t("new.addbtn") : t("save")))
     ));
     setTimeout(() => (name ? priceIn : nameIn).focus(), 50);
   }
@@ -399,142 +508,231 @@
     const apply = () => {
       const price = parseNum(priceIn.value);
       const qty = Math.floor(parseNum(qtyIn.value));
-      if (!(price >= 0) || priceIn.value === "" || !(qty >= 1)) { toast("Revisa el precio y la cantidad"); return; }
+      if (!(price >= 0) || priceIn.value === "" || !(qty >= 1)) { toast(t("err.check")); return; }
       const k = knownPrice(it.name);
       if (!k || k.price !== price) rememberPrice(it.name, it.unit, price);
       it.price = price; it.qty = qty;
       save(); render(); closeSheet();
     };
     showSheet(h("div", null,
-      h("h2", null, it.name),
-      h("div", { class: "hint" }, "Si cambias el precio, la app lo recordará para la próxima vez."),
-      h("div", { class: "two" }, field("Precio (" + it.unit + ")", priceIn), field("Cantidad", qtyIn)),
+      h("h2", null, dn(it.name)),
+      h("div", { class: "hint" }, t("edit.hint")),
+      h("div", { class: "two" }, field(t("price", { cur: du(it.unit) }), priceIn), field(t("qty"), qtyIn)),
       h("div", { class: "actions" },
-        h("button", { class: "btn danger", onclick: () => { state.list = state.list.filter((i) => i.id !== id); save(); render(); closeSheet(); } }, "Quitar"),
-        h("button", { class: "btn", onclick: apply }, "Guardar"))
+        h("button", { class: "btn danger", onclick: () => { state.list = state.list.filter((i) => i.id !== id); save(); render(); closeSheet(); } }, t("remove")),
+        h("button", { class: "btn", onclick: apply }, t("save")))
     ));
   }
 
-  /* Mis precios: todo lo que el usuario ha registrado en este lugar */
-  function openPrices() {
-    const search = h("input", { type: "search", placeholder: "Buscar en mis precios", autocomplete: "off" });
+  /* ================= VISTA: Gastos ================= */
+  VIEWS.spend = (root) => {
+    root.append(h("h2", { class: "view-title" }, t("spend.title")));
+
+    const loc = dateLocale();
+    const ws = weekStart();
+    const we = new Date(ws); we.setDate(we.getDate() + 6);
+    const fmt = (d) => d.toLocaleDateString(loc, { day: "numeric", month: "short" });
+    const monthLabel = new Date().toLocaleDateString(loc, { month: "long", year: "numeric" });
+
+    root.append(
+      periodCard(t("spend.week") + " · " + fmt(ws) + " – " + fmt(we), spentSince(ws), state.budgetWeek, "week"),
+      periodCard(t("spend.month") + " · " + monthLabel, spentSince(monthStart()), state.budgetMonth, "month")
+    );
+
+    if (state.list.length) root.append(h("div", { class: "note" }, t("spend.inlist", { total: money(total()) })));
+
+    root.append(h("div", { class: "section-title" }, t("spend.recent")));
+    if (!state.history.length) {
+      root.append(h("div", { class: "empty" }, t("spend.none")));
+      return;
+    }
+    const box = h("div", { class: "card-list" });
+    for (const p of state.history.slice(0, 20)) {
+      const when = new Date(p.at).toLocaleDateString(loc, { weekday: "short", day: "numeric", month: "short" });
+      box.append(
+        h("button", { class: "row", onclick: () => openPurchase(p) },
+          h("div", null, h("span", { class: "n" }, when),
+            h("div", { class: "u" }, p.count === 1 ? t("spend.one") : t("spend.many", { n: p.count }))),
+          h("div", { class: "p dark" }, money(p.total)))
+      );
+    }
+    root.append(box);
+  };
+
+  function periodCard(label, spent, budget, kind) {
+    const card = h("button", { class: "summary period", onclick: () => openBudget(kind) });
+    card.append(h("div", { class: "label" }, label), h("div", { class: "big" }, money(spent)));
+    if (budget > 0) {
+      const s = level(spent, budget);
+      card.classList.add(s.level);
+      card.append(
+        h("div", { class: "bar" }, h("i", { style: "width:" + Math.min(100, s.pct * 100) + "%" })),
+        h("div", { class: "period-note" },
+          t("spend.of", { total: money(budget) }) + " · " + (s.left < 0 ? t("over") : t("left")) + " " + money(Math.abs(s.left))));
+    } else {
+      card.classList.add("ok", "nobudget");
+      card.append(h("div", { class: "period-note" }, t("spend.nobudget")));
+    }
+    return card;
+  }
+
+  function openPurchase(p) {
+    const loc = dateLocale();
+    const when = new Date(p.at).toLocaleString(loc, { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" });
+    showSheet(h("div", null,
+      h("h2", null, money(p.total)),
+      h("div", { class: "hint" }, when),
+      h("div", { class: "lines" }, p.items.map((i) =>
+        h("div", { class: "line" },
+          h("span", null, i.qty + " × " + dn(i.name)),
+          h("span", null, money(i.price * i.qty))))),
+      h("div", { class: "actions" },
+        h("button", { class: "btn danger", onclick: () => {
+          state.history = state.history.filter((x) => x.id !== p.id);
+          save(); render(); closeSheet(); toast(t("purchase.deleted"));
+        } }, t("purchase.delete")),
+        h("button", { class: "btn", onclick: closeSheet }, t("done")))
+    ));
+  }
+
+  /* ================= VISTA: Mis productos ================= */
+  VIEWS.products = (root) => {
+    const search = h("input", { type: "search", placeholder: t("products.search"), autocomplete: "off" });
     const hint = h("div", { class: "hint" });
-    const results = h("div", { class: "results" });
+    const results = h("div", { class: "card-list" });
 
     function draw() {
       const q = norm(search.value.trim());
       const all = Object.entries(placePrices()).map(([key, v]) => Object.assign({ key }, v));
-      all.sort((a, b) => a.name.localeCompare(b.name, "es"));
-      const shown = all.filter((e) => !q || norm(e.name).includes(q));
-      hint.textContent = all.length === 1 ? "1 producto registrado" : all.length + " productos registrados";
+      all.sort((a, b) => dn(a.name).localeCompare(dn(b.name), state.lang));
+      const shown = all.filter((e) => !q || norm(e.name).includes(q) || norm(dn(e.name)).includes(q));
+      hint.textContent = all.length === 1 ? t("products.one") : t("products.many", { n: all.length });
       results.replaceChildren();
-      if (!all.length) {
-        results.append(h("div", { class: "empty" }, "Aún no has registrado precios. Se guardan solos cuando agregas un producto."));
-        return;
-      }
-      if (!shown.length) results.append(h("div", { class: "empty" }, "Nada coincide con tu búsqueda."));
+      if (!all.length) { results.append(h("div", { class: "empty" }, t("products.empty"))); return; }
+      if (!shown.length) results.append(h("div", { class: "empty" }, t("products.nomatch")));
       for (const e of shown) {
-        const when = new Date(e.at).toLocaleDateString("es", { day: "numeric", month: "short" });
+        const when = new Date(e.at).toLocaleDateString(dateLocale(), { day: "numeric", month: "short" });
         results.append(
           h("button", { class: "row", onclick: () => openPriceEdit(e) },
-            h("div", null, h("span", { class: "n" }, e.name), h("div", { class: "u" }, e.unit + " · actualizado " + when)),
+            h("div", null, h("span", { class: "n" }, dn(e.name)),
+              h("div", { class: "u" }, du(e.unit) + " · " + t("products.updated", { date: when }))),
             h("div", { class: "p" }, money(e.price)))
         );
       }
     }
 
     search.addEventListener("input", draw);
-    showSheet(h("div", { style: "display:flex;flex-direction:column;min-height:0;height:78vh" },
-      h("h2", null, "Mis precios"),
+    root.append(
+      h("h2", { class: "view-title" }, t("products.title")),
       hint,
       h("div", { class: "field search" }, search),
       results,
-      h("div", { class: "actions" },
-        h("button", { class: "btn ghost", onclick: () => openCreate("", "price") }, "Nuevo precio"),
-        h("button", { class: "btn", onclick: closeSheet }, "Listo"))
-    ));
+      h("div", { class: "add-more" },
+        h("p", null, t("products.addhint")),
+        h("button", { class: "btn block", onclick: () => openCreate("", "price") }, "+ " + t("products.addbtn")))
+    );
     draw();
-  }
+  };
 
   function openPriceEdit(e) {
     const input = priceInput(e.price);
     const apply = () => {
       const price = parseNum(input.value);
-      if (!(price >= 0) || input.value === "") { toast("Escribe el precio"); return; }
+      if (!(price >= 0) || input.value === "") { toast(t("err.price")); return; }
       rememberPrice(e.name, e.unit, price);
-      toast("Precio actualizado");
-      openPrices();
+      render(); closeSheet();
+      toast(t("pe.updated"));
     };
     showSheet(h("div", null,
-      h("h2", null, e.name),
-      h("div", { class: "hint" }, "Precio por " + e.unit + ". Lo que ya está en tu lista no cambia."),
-      field("Precio (" + state.currency + ")", input),
+      h("h2", null, dn(e.name)),
+      h("div", { class: "hint" }, t("pe.hint", { unit: du(e.unit) })),
+      field(t("price", { cur: state.currency }), input),
       h("div", { class: "actions" },
-        h("button", { class: "btn danger", onclick: () => { forgetPrice(e.name); toast("Precio olvidado"); openPrices(); } }, "Olvidar"),
-        h("button", { class: "btn ghost", onclick: openPrices }, "Volver"),
-        h("button", { class: "btn", onclick: apply }, "Guardar"))
+        h("button", { class: "btn danger", onclick: () => { forgetPrice(e.name); render(); closeSheet(); toast(t("pe.forgot")); } }, t("forget")),
+        h("button", { class: "btn", onclick: apply }, t("save")))
     ));
     onEnter(input, apply);
     setTimeout(() => input.focus(), 50);
   }
 
-  /* Ajustes */
-  function openSettings() {
-    const cur = h("select", null, Object.keys(CURRENCIES).map((c) => h("option", { value: c, selected: c === state.currency }, c)));
-    const where = state.town ? state.town + ", " + state.region : state.region;
-    const saveSettings = () => {
-      state.currency = cur.value;
-      save(); render(); closeSheet();
-    };
+  /* ================= VISTA: Guía para ahorrar ================= */
+  VIEWS.tips = (root) => {
+    root.append(
+      h("h2", { class: "view-title" }, t("tips.title")),
+      h("p", { class: "intro" }, t("tips.intro"))
+    );
+    t("tips").forEach(([title, body], i) => {
+      root.append(h("article", { class: "tip" },
+        h("div", { class: "tip-n" }, i + 1),
+        h("div", null, h("h3", null, title), h("p", null, body))));
+    });
+  };
 
-    showSheet(h("div", null,
-      h("h2", null, "Ajustes"),
-      field("Moneda", cur),
-      h("div", { class: "field" },
-        h("span", null, "Ubicación"),
-        h("button", { class: "btn ghost block", onclick: () => openRegion(false) }, where)),
-      h("div", { class: "hint" }, "Tus precios se guardan para este lugar."),
-      h("div", { class: "actions" },
-        h("button", { class: "btn danger", onclick: () => {
-          if (!state.list.length) { toast("La lista ya está vacía"); return; }
-          if (confirm("¿Vaciar toda la lista?")) { state.list = []; save(); render(); closeSheet(); }
-        } }, "Vaciar lista"),
-        h("button", { class: "btn", onclick: saveSettings }, "Guardar"))
-    ));
-  }
+  /* ================= VISTA: Ajustes ================= */
+  VIEWS.settings = (root) => {
+    const select = (options, value, onchange) =>
+      h("select", { onchange: (e) => onchange(e.target.value) },
+        options.map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
 
-  /* Ubicación (la primera vez es obligatoria) */
-  function openRegion(first) {
+    const lang = select(Object.entries(LANGS), state.lang, (v) => { state.lang = v; save(); render(); });
+
+    const region = select(window.REGIONS.map((r) => [r, r]), state.region, (v) => {
+      state.region = v; save(); render(); toast(t("set.region.toast", { region: v }));
+    });
+
+    const town = h("input", { type: "text", placeholder: t("set.townph"), value: state.town, autocomplete: "off" });
+    town.addEventListener("change", () => { state.town = town.value.trim(); save(); renderLocation(); });
+
+    const cur = select(Object.keys(CURRENCIES).map((c) => [c, c]), state.currency, (v) => { state.currency = v; save(); render(); });
+
+    root.append(
+      h("h2", { class: "view-title" }, t("set.title")),
+      h("div", { class: "card" },
+        field(t("set.lang"), lang),
+        field(t("set.region"), region),
+        field(t("set.town"), town),
+        h("div", { class: "hint" }, t("set.hint")),
+        field(t("set.currency"), cur)),
+      h("div", { class: "section-title" }, t("set.danger")),
+      h("div", { class: "card danger-zone" },
+        h("button", { class: "btn danger block", onclick: () => {
+          if (!state.list.length) { toast(t("set.emptyalready")); return; }
+          if (confirm(t("set.confirmlist"))) { state.list = []; save(); render(); toast(t("set.cleared")); }
+        } }, t("set.clearlist")),
+        h("button", { class: "btn danger block", onclick: () => {
+          if (!state.history.length) { toast(t("set.emptyalready")); return; }
+          if (confirm(t("set.confirmhist"))) { state.history = []; save(); render(); toast(t("set.cleared")); }
+        } }, t("set.clearhist")))
+    );
+  };
+
+  /* ---------- Ubicación (la primera vez es obligatoria) ---------- */
+  function openRegion() {
     const sel = h("select", null,
-      h("option", { value: "", disabled: true, selected: !state.region }, "Elige tu departamento"),
+      h("option", { value: "", disabled: true, selected: !state.region }, t("region.pick")),
       window.REGIONS.map((r) => h("option", { value: r, selected: r === state.region }, r)));
-    const town = h("input", { type: "text", placeholder: "Ej: Chinchiná", value: state.town, autocomplete: "off" });
+    const town = h("input", { type: "text", placeholder: t("set.townph"), value: state.town, autocomplete: "off" });
 
     const apply = () => {
-      if (!sel.value) { toast("Elige un departamento"); return; }
-      const changed = sel.value !== state.region;
+      if (!sel.value) { toast(t("err.region")); return; }
       state.region = sel.value;
       state.town = town.value.trim();
       save(); render(); closeSheet();
-      if (changed && !first) toast("Ahora usas tus precios de " + state.region);
     };
 
     showSheet(h("div", null,
-      h("h2", null, first ? "¿Dónde compras?" : "Tu ubicación"),
-      h("div", { class: "hint" }, "Tus precios se guardan por departamento, porque cambian de un lugar a otro."),
-      field("Departamento", sel),
-      field("Pueblo o municipio (opcional)", town),
-      h("div", { class: "actions" },
-        first ? null : h("button", { class: "btn ghost", onclick: closeSheet }, "Cancelar"),
-        h("button", { class: "btn", onclick: apply }, first ? "Continuar" : "Guardar"))
+      h("h2", null, t("first.title")),
+      h("div", { class: "hint" }, t("first.hint")),
+      field(t("set.region"), sel),
+      field(t("region.town"), town),
+      h("div", { class: "actions" }, h("button", { class: "btn", onclick: apply }, t("next")))
     ));
   }
 
   /* ---------- Inicio ---------- */
   $("btn-add").addEventListener("click", () => openAdd());
-  $("btn-prices").addEventListener("click", openPrices);
-  $("btn-settings").addEventListener("click", openSettings);
-  $("btn-loc").addEventListener("click", () => openRegion(false));
+  $("btn-menu").addEventListener("click", openMenu);
+  $("btn-loc").addEventListener("click", () => go("settings"));
   render();
-  if (!state.region) openRegion(true);
+  if (!state.region) openRegion();
 })();
