@@ -100,6 +100,43 @@
   }
 
   const total = () => state.list.reduce((s, i) => s + i.price * i.qty, 0);
+  const round2 = (n) => Math.round(n * 100) / 100;
+  const fmtQty = (n) => String(round2(n)).replace(".", state.lang === "en" ? "." : ",");
+
+  /* Compartir con el menú del teléfono; si no existe, copiar; si tampoco, mostrar el texto */
+  async function shareText(text) {
+    const cap = window.Capacitor;
+    const isCancel = (e) => e && (e.name === "AbortError" || /cancel/i.test(String(e.message || e)));
+    try {
+      if (cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.Share) {
+        await cap.Plugins.Share.share({ text });
+        return;
+      }
+    } catch (e) { if (isCancel(e)) return; }
+    try {
+      if (navigator.share) { await navigator.share({ text }); return; }
+    } catch (e) { if (isCancel(e)) return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(t("share.copied"));
+      return;
+    } catch (e) { /* sin portapapeles */ }
+    openTextSheet(text);
+  }
+
+  function openTextSheet(text) {
+    const area = h("textarea", { readonly: true, rows: "9" }, text);
+    showSheet(h("div", null,
+      h("h2", null, t("bk.text.title")),
+      h("div", { class: "field" }, area),
+      h("div", { class: "actions" },
+        h("button", { class: "btn ghost", onclick: closeSheet }, t("done")),
+        h("button", { class: "btn", onclick: () => {
+          area.select();
+          try { document.execCommand("copy"); toast(t("bk.copied")); } catch (e) { /* seleccionado para copiar a mano */ }
+        } }, t("bk.copy")))
+    ));
+  }
 
   function level(spent, budget) {
     const left = budget - spent;
@@ -196,8 +233,11 @@
     pushOverlay();
   }
 
+  let closing = false; // evita retroceder dos veces si se cierra dos veces seguidas
+
   function hideOverlay() {
     overlayOpen = false;
+    closing = false;
     $("sheet").hidden = true;
     $("drawer").hidden = true;
     $("scrim").hidden = true;
@@ -205,8 +245,11 @@
 
   function closeOverlay() {
     if (!overlayOpen || !state.region) return; // la primera vez hay que elegir ubicación
-    if (usingHistory) history.back();
-    else hideOverlay();
+    if (usingHistory) {
+      if (closing) return;
+      closing = true;
+      history.back();
+    } else hideOverlay();
   }
   const closeSheet = closeOverlay;
 
@@ -247,9 +290,16 @@
     summary.append(...summaryNodes(summary));
     root.append(summary, listNode());
     if (state.list.length) {
-      root.append(h("button", { class: "btn ghost block finish", onclick: openFinish }, t("list.finish")));
+      root.append(h("div", { class: "list-actions" },
+        h("button", { class: "btn ghost", onclick: shareList }, t("share.btn")),
+        h("button", { class: "btn ghost finish", onclick: openFinish }, t("list.finish"))));
     }
   };
+
+  function shareList() {
+    const lines = state.list.map((i) => "• " + dn(i.name) + " × " + fmtQty(i.qty) + " — " + money(i.price * i.qty));
+    shareText([t("share.title") + " (Mi Súper)", ...lines, "", t("share.total") + ": " + money(total())].join("\n"));
+  }
 
   function summaryNodes(box) {
     if (!state.budget) {
@@ -290,7 +340,7 @@
             h("div", { class: "sub" }, money(it.price) + " / " + du(it.unit))),
           h("div", { class: "stepper" },
             h("button", { "aria-label": "−", onclick: () => changeQty(it.id, -1) }, "−"),
-            h("span", null, it.qty),
+            h("span", null, fmtQty(it.qty)),
             h("button", { "aria-label": "+", onclick: () => changeQty(it.id, 1) }, "+")),
           h("div", { class: "total" }, money(it.price * it.qty)))
       );
@@ -306,15 +356,15 @@
   function changeQty(id, d) {
     const it = state.list.find((i) => i.id === id);
     if (!it) return;
-    it.qty += d;
-    if (it.qty < 1) state.list = state.list.filter((i) => i.id !== id);
+    it.qty = round2(it.qty + d);
+    if (it.qty <= 0) state.list = state.list.filter((i) => i.id !== id);
     save();
     render();
   }
 
   function addToList(p, price) {
     const found = state.list.find((i) => i.cid === p.id && i.price === price);
-    if (found) found.qty += 1;
+    if (found) found.qty = round2(found.qty + 1);
     else state.list.push({ id: uid(), cid: p.id, name: p.name, unit: p.unit, price, qty: 1, done: false });
     save();
     render();
@@ -504,11 +554,11 @@
     const it = state.list.find((i) => i.id === id);
     if (!it) return;
     const priceIn = priceInput(it.price);
-    const qtyIn = h("input", { type: "number", inputmode: "numeric", min: "1", step: "1", value: it.qty });
+    const qtyIn = h("input", { type: "number", inputmode: "decimal", min: "0", step: "any", value: it.qty });
     const apply = () => {
       const price = parseNum(priceIn.value);
-      const qty = Math.floor(parseNum(qtyIn.value));
-      if (!(price >= 0) || priceIn.value === "" || !(qty >= 1)) { toast(t("err.check")); return; }
+      const qty = round2(parseNum(qtyIn.value));
+      if (!(price >= 0) || priceIn.value === "" || !(qty > 0)) { toast(t("err.check")); return; }
       const k = knownPrice(it.name);
       if (!k || k.price !== price) rememberPrice(it.name, it.unit, price);
       it.price = price; it.qty = qty;
@@ -584,8 +634,9 @@
       h("div", { class: "hint" }, when),
       h("div", { class: "lines" }, p.items.map((i) =>
         h("div", { class: "line" },
-          h("span", null, i.qty + " × " + dn(i.name)),
+          h("span", null, fmtQty(i.qty) + " × " + dn(i.name)),
           h("span", null, money(i.price * i.qty))))),
+      h("button", { class: "btn ghost block again", onclick: () => buyAgain(p) }, t("buy.again")),
       h("div", { class: "actions" },
         h("button", { class: "btn danger", onclick: () => {
           state.history = state.history.filter((x) => x.id !== p.id);
@@ -593,6 +644,22 @@
         } }, t("purchase.delete")),
         h("button", { class: "btn", onclick: closeSheet }, t("done")))
     ));
+  }
+
+  /* Volver a comprar: pasa los productos de una compra a la lista, con el precio actual si se conoce */
+  function buyAgain(p) {
+    const all = window.CATALOG.concat(state.custom);
+    for (const i of p.items) {
+      const prod = all.find((x) => norm(x.name) === norm(i.name)) || { id: "h" + norm(i.name), name: i.name, unit: i.unit };
+      const k = knownPrice(i.name);
+      const price = k ? k.price : i.price;
+      const found = state.list.find((x) => x.cid === prod.id && x.price === price);
+      if (found) found.qty = round2(found.qty + i.qty);
+      else state.list.push({ id: uid(), cid: prod.id, name: i.name, unit: i.unit, price, qty: i.qty, done: false });
+    }
+    save();
+    go("list"); // también cierra la hoja
+    toast(t("buy.added", { n: p.items.length }));
   }
 
   /* ================= VISTA: Mis productos ================= */
@@ -693,6 +760,11 @@
         field(t("set.town"), town),
         h("div", { class: "hint" }, t("set.hint")),
         field(t("set.currency"), cur)),
+      h("div", { class: "section-title" }, t("bk.title")),
+      h("div", { class: "card backup" },
+        h("div", { class: "hint" }, t("bk.hint")),
+        h("button", { class: "btn ghost block", onclick: exportData }, t("bk.export")),
+        h("button", { class: "btn ghost block", onclick: openImport }, t("bk.import"))),
       h("div", { class: "section-title" }, t("set.danger")),
       h("div", { class: "card danger-zone" },
         h("button", { class: "btn danger block", onclick: () => {
@@ -705,6 +777,45 @@
         } }, t("set.clearhist")))
     );
   };
+
+  /* ---------- Copia de seguridad (texto JSON, sin archivos) ---------- */
+  function exportData() {
+    shareText(JSON.stringify({ app: "mi-super", version: 1, exported: new Date().toISOString(), data: state }));
+  }
+
+  function parseBackup(text) {
+    let obj;
+    try { obj = JSON.parse(text.trim()); } catch (e) { return null; }
+    const d = obj && obj.app === "mi-super" ? obj.data : null;
+    if (!d || typeof d !== "object" || !Array.isArray(d.list) || !Array.isArray(d.history)
+        || typeof d.prices !== "object" || d.prices === null || !Array.isArray(d.custom)) return null;
+    const clean = Object.assign({}, defaults);
+    for (const k of Object.keys(defaults)) if (d[k] !== undefined && typeof d[k] === typeof defaults[k]) clean[k] = d[k];
+    clean.list = d.list; clean.history = d.history; clean.custom = d.custom; clean.prices = d.prices;
+    if (!LANGS[clean.lang]) clean.lang = state.lang;
+    return clean;
+  }
+
+  function openImport() {
+    const area = h("textarea", { rows: "9", placeholder: "{ … }" });
+    const apply = () => {
+      const next = parseBackup(area.value);
+      if (!next) { toast(t("bk.import.err")); return; }
+      if (!confirm(t("bk.import.confirm"))) return;
+      state = next;
+      save(); render(); closeSheet();
+      toast(t("bk.import.ok"));
+      if (!state.region) setTimeout(openRegion, 350);
+    };
+    showSheet(h("div", null,
+      h("h2", null, t("bk.import.title")),
+      h("div", { class: "hint" }, t("bk.import.hint")),
+      h("div", { class: "field" }, area),
+      h("div", { class: "actions" },
+        h("button", { class: "btn ghost", onclick: closeSheet }, t("cancel")),
+        h("button", { class: "btn", onclick: apply }, t("bk.import.btn")))
+    ));
+  }
 
   /* ---------- Ubicación (la primera vez es obligatoria) ---------- */
   function openRegion() {
